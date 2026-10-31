@@ -2,13 +2,15 @@
 
 > **Port para Linux.** Este repositorio es la adaptacion para Linux del
 > proyecto original **L4D2 Mod Loader - Versus** de **Tokyossz**
-> (<https://github.com/SOYmenchowey/l4d2-loader-mod-versus>), que se publico
-> para Windows. Aqui se anaden el lanzador `run-linux.sh`, la entrada de menu
-> `.desktop`, los hooks de PyInstaller para Linux y los ajustes de deteccion de
-> Steam, datos y portapapeles en Linux.
+> (<https://github.com/SOYmenchowey/l4d2-loader-mod-versus>), publicado para
+> Windows. Aqui se anaden el lanzador `run-linux.sh` (Debian/Ubuntu/MX, Fedora,
+> Arch, openSUSE y distros inmutables como Bazzite), la entrada de menu
+> `.desktop`, los hooks de PyInstaller para Linux, la deteccion de Steam
+> Flatpak y de bibliotecas en discos montados, y el detector de Workshop en
+> `steamapps/workshop/content/550`.
 > Ver `NOTICE.md` para el detalle de autoria y licencia.
 
-**Version actual: 1.1.** La version aparece en la interfaz y en el reporte de diagnostico copiado para identificar cada entrega.
+**Version actual: 1.2.** La version aparece en la interfaz y en el reporte de diagnostico copiado para identificar cada entrega.
 
 Herramienta para gestionar addons de **Left 4 Dead 2** sin mover archivos a mano ni editar `gameinfo.txt` manualmente.
 
@@ -16,27 +18,29 @@ Selecciona tus mods para Versus, activa la configuración y pulsa **JUGAR**.
 
 ## Vista previa
 
-| Mods | Glows |
+| Mods | Quitar addons |
 | --- | --- |
-| ![Vista de mods](assets/screenshots/mods.png) | ![Editor de glows](assets/screenshots/glows.png) |
+| ![Vista de mods](assets/screenshots/mods.png) | ![Modal para quitar addons](assets/screenshots/remove-addons.png) |
 
-| Quitar addons | Diagnóstico |
-| --- | --- |
-| ![Modal para quitar addons](assets/screenshots/remove-addons.png) | ![Diagnóstico del loader](assets/screenshots/diagnostics.png) |
+| Diagnóstico |
+| --- |
+| ![Diagnóstico del loader](assets/screenshots/diagnostics.png) |
 
 ## Características
 
 * **Explorador de addons del Workshop**: muestra títulos, descripciones e imágenes de preview usando la API pública de Steam con caché local.
 * **Activar y quitar mods**: gestiona `gameinfo.txt` mediante `SearchPaths` y crea copias administradas en `mods/<id>/pak01_dir.vpk`.
-* **Activación acumulativa**: conserva los mods que ya estaban activos al agregar nuevos addons.
+* **Activación acumulativa**: al habilitar addons sueltos se conservan los que ya estaban activos.
+* **Modpacks exclusivos**: al aplicar un preset quedan activos solo los addons de ese modpack; los demás addons del loader se quitan (sin dependencias ni mods extra). Se guarda la configuración anterior en «Última config».
+* **Detección de modpacks**: un VPK local que ya incluye varios mods del Workshop se marca como **PACK**; el loader compara el contenido del pack con el de cada addon del Workshop y sabe cuáles trae dentro.
+* **Un pack, solo sus mods**: al activar un pack se excluyen de la selección los mods que ya trae dentro y se desactivan (copias del loader y `addonlist.txt`), para que el juego no cargue el mismo contenido dos veces.
 * **Categorías automáticas**: Skins, Armas, Sonido, UI, VScripts y Otros.
-* **Favoritos y presets**: guarda combinaciones de addons para reutilizarlas rápido.
+* **Favoritos y presets (modpacks)**: guarda combinaciones de addons para reutilizarlas rápido.
 * **Dependencias sugeridas**: detecta posibles requisitos entre addons y evita ciclos.
 * **Ruta manual de L4D2**: permite seleccionar la carpeta del juego o una Steam Library si Steam está en otro disco.
-* **Editor de glows**: personaliza colores de sobrevivientes, infectados, objetos y Witch desde la interfaz.
 * **Visión de infectado**: permite quitar o restaurar el tinte naranja/azul.
 * **Restauración segura**: revierte los cambios hechos por el loader y conserva archivos o ediciones externas.
-* **Watcher automático**: detecta cambios en los VPKs del Workshop sin reiniciar la app.
+* **Detección de Workshop**: lee `left4dead2/addons/workshop` y también `steamapps/workshop/content/550`; el watcher detecta cambios sin reiniciar la app.
 * **Bloqueo con juego abierto**: evita modificar archivos mientras Left 4 Dead 2 está ejecutándose.
 
 ## Requisitos
@@ -52,15 +56,23 @@ Para correr el código fuente:
 * Python 3.10 o superior.
 * Dependencias de `requirements.txt`.
 
-### Linux (MX Linux / Debian / Ubuntu)
+### Linux (Debian / Ubuntu / MX, Fedora y Bazzite)
 
 ```bash
-sudo apt install python3-venv libgtk-3-0 libmpv2 xclip xdg-utils
 chmod +x run-linux.sh
 ./run-linux.sh
 ```
 
-* Detecta Steam en `~/.local/share/Steam`, `~/.steam/steam` y Flatpak, y lee `libraryfolders.vdf` para otras bibliotecas.
+`run-linux.sh` crea un entorno virtual en la primera ejecución, revisa las librerías que necesita Flet (GTK3, mpv, portapapeles, xdg-open) y muestra el comando de instalación según tu distro:
+
+* **Debian / Ubuntu / MX**: `sudo apt install python3-venv libgtk-3-0 libmpv2 xclip wl-clipboard xdg-utils`
+* **Fedora**: `sudo dnf install python3 gtk3 mpv-libs wl-clipboard xclip xdg-utils` (`mpv-libs` viene de RPM Fusion Free si no está en tus repos).
+* **Bazzite / Silverblue / Kinoite (inmutables)**: prueba `./run-linux.sh` directamente; si faltan librerías, lo más limpio es un contenedor (`distrobox create -n l4d2 -i fedora:latest`, instala los paquetes de Fedora dentro y ejecuta el script ahí) o, si prefieres, `rpm-ostree install mpv-libs wl-clipboard` y reiniciar.
+
+Detalles:
+
+* Detecta Steam en `~/.local/share/Steam`, `~/.steam/steam`, Flatpak (incluido el `data/Steam` del sandbox de Bazzite/Nobara/SteamOS) y Snap, y lee `libraryfolders.vdf` (de `steamapps/` y de `config/`) para otras bibliotecas.
+* También busca bibliotecas de Steam en discos montados (`/run/media/<usuario>/...`, `/var/mnt`, `/mnt`, `/media`), típicos de Bazzite y Steam Deck.
 * Datos y caché en `~/.local/share/L4D2ModLoader`.
 * El estado de «juego abierto» se comprueba leyendo `/proc`.
 * Si Steam está en otra ruta, usa **Buscar ruta**.
@@ -103,23 +115,11 @@ El repositorio no incluye el `.exe` generado. `dist/`, `build/`, `.flet/`, logs,
 
 ## Glows
 
-El editor de glows crea:
-
-```text
-left4dead2/cfg/l4d2_mod_loader_glows.cfg
-```
-
-Y agrega un bloque gestionado en:
-
-```text
-left4dead2/cfg/autoexec.cfg
-```
-
-Si `autoexec.cfg` no existe, el loader lo crea. Al restaurar glows, solo se elimina el bloque y el cfg creados por el loader.
+Desde la 1.2 el loader ya no crea ni edita glows, para que no pisen los de los modpacks. Si una versión anterior los dejó aplicados (`left4dead2/cfg/l4d2_mod_loader_glows.cfg` y su bloque en `autoexec.cfg`), el loader los retira solo la próxima vez que abre con el juego cerrado. No toca nada de `autoexec.cfg` que no haya escrito él.
 
 ## Restauración
 
-**Restaurar original** devuelve `gameinfo.txt`, glows, visión de infectado y copias de mods al estado anterior al loader.
+**Restaurar original** devuelve `gameinfo.txt`, visión de infectado y copias de mods al estado anterior al loader (y retira cualquier glow heredado de versiones anteriores).
 
 Si otra herramienta o el usuario modificó `gameinfo.txt` después, el loader conserva esos cambios externos y solo retira sus propias entradas administradas.
 
@@ -137,8 +137,9 @@ Port para Linux y adaptaciones: **JustItsSora**.
 
 El repositorio original se publico sin declaracion de licencia, por lo que el
 codigo heredado mantiene los derechos de autor de su autor. Las contribuciones
-propias de este repositorio (port para Linux) se publican bajo MIT; consulta
-`LICENSE` y `NOTICE.md` para el detalle.
+propias de este repositorio (port para Linux, deteccion de packs y gestion de
+`addonlist.txt`) se publican bajo MIT; consulta `LICENSE` y `NOTICE.md` para el
+detalle.
 
 ## Licencia
 
