@@ -6,7 +6,7 @@ import time
 from l4d2_platform import IS_WINDOWS, data_base
 
 
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 VERSION_LABEL = "Version %s" % APP_VERSION
 
 DEFAULT_WINDOW_WIDTH = 1152

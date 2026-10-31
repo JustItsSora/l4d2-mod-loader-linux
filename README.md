@@ -10,7 +10,7 @@
 > `steamapps/workshop/content/550`.
 > Ver `NOTICE.md` para el detalle de autoria y licencia.
 
-**Version actual: 1.2.** La version aparece en la interfaz y en el reporte de diagnostico copiado para identificar cada entrega.
+**Version actual: 1.3.** La version aparece en la interfaz y en el reporte de diagnostico copiado para identificar cada entrega.
 
 Herramienta para gestionar addons de **Left 4 Dead 2** sin mover archivos a mano ni editar `gameinfo.txt` manualmente.
 
@@ -42,6 +42,7 @@ Selecciona tus mods para Versus, activa la configuración y pulsa **JUGAR**.
 * **Restauración segura**: revierte los cambios hechos por el loader y conserva archivos o ediciones externas.
 * **Detección de Workshop**: lee `left4dead2/addons/workshop` y también `steamapps/workshop/content/550`; el watcher detecta cambios sin reiniciar la app.
 * **Bloqueo con juego abierto**: evita modificar archivos mientras Left 4 Dead 2 está ejecutándose.
+* **Auto-actualizador**: al arrancar consulta las releases de GitHub y avisa en la barra lateral cuando hay una version nueva. El boton «Actualizar» descarga el zip de la release, guarda una copia de los archivos actuales en `.backup-previous`, los reemplaza y pide reiniciar. No toca el entorno virtual (`.venv`), la configuracion del usuario ni el juego.
 
 ## Requisitos
 
