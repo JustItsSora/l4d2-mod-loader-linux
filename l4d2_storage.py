@@ -1,0 +1,83 @@
+import json
+import os
+import tempfile
+
+from l4d2_platform import data_base
+
+
+def app_dir():
+    base = data_base(tempfile.gettempdir())
+    path = os.path.join(base, "L4D2ModLoader")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        # Keep reads/defaults available; writers still report this failure.
+        pass
+    return path
+
+
+def _app_dir():
+    return app_dir()
+
+
+def atomic_write_text(path, text, encoding="utf-8"):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=os.path.basename(path) + ".", suffix=".tmp",
+        dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline="") as file:
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_bytes(path, data):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        prefix=os.path.basename(path) + ".", suffix=".tmp",
+        dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_text(path, text, encoding="utf-8"):
+    atomic_write_text(path, text, encoding)
+
+
+def _atomic_write_bytes(path, data):
+    atomic_write_bytes(path, data)
+
+
+def load_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return default
+
+
+def save_json(path, data):
+    try:
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        _atomic_write_text(path, text)
+        return True
+    except Exception:
+        return False

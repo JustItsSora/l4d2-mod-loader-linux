@@ -1,0 +1,37 @@
+MIT License
+
+Copyright (c) 2026 kyuog
+
+Alcance de esta licencia
+------------------------
+
+Esta licencia (MIT) cubre unicamente las contribuciones propias publicadas en
+este repositorio: el port para Linux (l4d2_platform.py, run-linux.sh,
+l4d2-mod-loader.desktop, packaging_hooks/pyi_rth_flet_desktop_linux.py) y las
+adaptaciones de los archivos originales para que funcionen en Linux.
+
+El proyecto original "L4D2 Mod Loader - Versus" es obra de Tokyossz
+(https://github.com/SOYmenchowey/l4d2-loader-mod-versus) y fue publicado sin
+declarar licencia. Los derechos de autor sobre esas partes originales siguen
+perteneciendo a su autor y no se re-licencian con este archivo.
+
+Si el autor original publica una licencia en su repositorio, esta aplicara a
+las partes que aqui se distribuyen.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

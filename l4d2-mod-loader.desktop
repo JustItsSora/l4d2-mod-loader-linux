@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=L4D2 Mod Loader
+Comment=Gestor de addons para Left 4 Dead 2
+Exec=/RUTA/A/l4d2-loader-mod-versus-main/run-linux.sh
+Icon=/RUTA/A/l4d2-loader-mod-versus-main/assets/icons/icono.png
+Terminal=false
+Categories=Game;Utility;
