@@ -22,8 +22,6 @@ def collect_health_snapshot(state, cfg_path, refresh_running=False, log=None):
 
     gameinfo = (os.path.join(l4d2, "left4dead2", "gameinfo.txt")
                 if game_found else "")
-    workshop = (os.path.join(l4d2, "left4dead2", "addons", "workshop")
-                if game_found else "")
     gameinfo_exists = bool(gameinfo and os.path.isfile(gameinfo))
     pending = set(state.get("_pending_cleanup_ids") or set())
     active_ids = set(state.get("active_ids") or set())
@@ -51,7 +49,7 @@ def collect_health_snapshot(state, cfg_path, refresh_running=False, log=None):
         "game_found": game_found,
         "game_running": running,
         "game_status_error": status_error,
-        "workshop_exists": bool(workshop and os.path.isdir(workshop)),
+        "workshop_exists": bool(game_found and core.workshop_detected(l4d2)),
         "gameinfo_exists": gameinfo_exists,
         "gameinfo_writable": bool(gameinfo_exists and os.access(
             gameinfo, os.W_OK)),

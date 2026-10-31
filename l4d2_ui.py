@@ -42,7 +42,7 @@ def diagnostic_warnings(snapshot):
     elif snapshot.get('game_running') is None:
         warnings.append('No se pudo comprobar si L4D2 esta cerrado; las modificaciones requieren verificarlo.')
     if snapshot.get("game_found") and not snapshot.get("workshop_exists"):
-        warnings.append("No se detecto la carpeta addons/workshop.")
+        warnings.append("No se detecto la carpeta del Workshop (addons/workshop o steamapps/workshop/content/550).")
     if snapshot.get("game_found") and not snapshot.get("gameinfo_exists"):
         warnings.append("No se encontro gameinfo.txt.")
     elif snapshot.get("game_found") and not snapshot.get("gameinfo_writable"):

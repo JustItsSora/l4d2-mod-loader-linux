@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import l4d2_core as core
 import l4d2_glows as glows
+import legacy_glows
 import l4d2_migrations as migrations
 import l4d2_state as state_module
 import l4d2_ui as ui
@@ -161,22 +162,22 @@ class UpgradeRegressions(unittest.TestCase):
         finally:
             destination.chmod(stat.S_IREAD | stat.S_IWRITE)
 
-    def test_glow_restore_preserves_commands_appended_after_block(self):
+    def test_legacy_glow_restore_preserves_commands_appended_after_block(self):
         auto = Path(glows.autoexec_path(str(self.game)))
         auto.parent.mkdir()
         for prefix, codec, newline in ((b'', 'utf-8', '\n'), (b'', 'latin-1', '\r\n'),
                                         (codecs.BOM_UTF16_LE, 'utf-16-le', '\r\n')):
             with self.subTest(codec=codec):
                 auto.write_bytes(prefix + 'echo before'.encode(codec))
-                self.assertTrue(glows.apply_glows(str(self.game), glows.default_colors(), log=lambda _: None))
+                self.assertTrue(legacy_glows.apply(str(self.game), log=lambda _: None))
                 auto.write_bytes(auto.read_bytes() + ('echo after' + newline).encode(codec))
                 self.assertTrue(glows.restore_glows(str(self.game), log=lambda _: None))
                 result = auto.read_bytes()[len(prefix):].decode(codec)
                 self.assertEqual(result.splitlines(), ['echo before', 'echo after'])
 
     def test_reapply_does_not_join_external_commands(self):
-        text = glows._with_managed_block('echo before') + 'echo after\n'
-        result = glows._remove_managed_block(glows._with_managed_block(text))
+        text = legacy_glows._with_managed_block('echo before') + 'echo after\n'
+        result = glows._remove_managed_block(legacy_glows._with_managed_block(text))
         self.assertEqual(result, 'echo before\necho after\n')
 
 

@@ -1,3 +1,4 @@
+import glob
 import os
 import re
 import sys
@@ -47,15 +48,61 @@ def resolve_l4d2_path(path):
 def _linux_steam_roots():
     home = os.path.expanduser("~")
     xdg = os.getenv("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
-    return [
+    roots = [
         os.path.join(xdg, "Steam"),
+        os.path.join(home, ".local", "share", "Steam"),
         os.path.join(home, ".steam", "steam"),
         os.path.join(home, ".steam", "root"),
         os.path.join(home, ".steam", "debian-installation"),
         os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
                      ".local", "share", "Steam"),
+        os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
+                     ".steam", "steam"),
+        # Steam Flatpak (Bazzite, Nobara, SteamOS): dentro del sandbox la
+        # carpeta de datos es ~/.var/app/com.valvesoftware.Steam/data.
+        os.path.join(home, ".var", "app", "com.valvesoftware.Steam",
+                     "data", "Steam"),
         os.path.join(home, "snap", "steam", "common", ".local", "share", "Steam"),
     ]
+    # Bazzite/Silverblue: /home es un enlace a /var/home. Se prueban ambos.
+    if home.startswith("/var/home/"):
+        roots.append(os.path.join("/home", home[len("/var/home/"):],
+                                  ".local", "share", "Steam"))
+    return roots
+
+
+def _linux_library_roots():
+    """Bibliotecas de Steam en discos montados (Bazzite, Fedora, Steam Deck).
+
+    Los discos secundarios suelen vivir en /run/media/<usuario>/<disco>,
+    /var/mnt o /mnt. Se prueban por si libraryfolders.vdf no los lista.
+    """
+    if IS_WINDOWS:
+        return []
+    user = os.getenv("USER") or os.path.basename(os.path.expanduser("~"))
+    bases = []
+    for pattern in (
+            "/run/media/%s/*" % user, "/run/media/*/*",
+            "/var/run/media/%s/*" % user,
+            "/media/%s/*" % user, "/media/*",
+            "/var/mnt/*", "/mnt/*"):
+        try:
+            bases.extend(sorted(glob.glob(pattern)))
+        except OSError:
+            continue
+    roots = []
+    for base in bases:
+        if not os.path.isdir(base):
+            continue
+        roots.extend([
+            base,
+            os.path.join(base, "SteamLibrary"),
+            os.path.join(base, "Steam"),
+            os.path.join(base, "steam"),
+            os.path.join(base, "Games", "SteamLibrary"),
+            os.path.join(base, "Games", "Steam"),
+        ])
+    return roots
 
 
 def _steam_roots_from_registry():
@@ -96,7 +143,7 @@ def _available_drive_roots():
 
 
 def _common_steam_roots():
-    roots = []
+    roots = list(_linux_library_roots())
     for drive in _available_drive_roots():
         roots.extend([
             os.path.join(drive, "Steam"),
@@ -111,12 +158,14 @@ def _common_steam_roots():
 
 def _library_roots_from_steam(root):
     roots = [root]
-    lib_file = os.path.join(root, "steamapps", "libraryfolders.vdf")
-    if os.path.isfile(lib_file):
+    for lib_file in (os.path.join(root, "steamapps", "libraryfolders.vdf"),
+                     os.path.join(root, "config", "libraryfolders.vdf")):
+        if not os.path.isfile(lib_file):
+            continue
         try:
             text = _read_text(lib_file)
         except OSError:
-            text = ""
+            continue
         for match in re.finditer(r'"path"\s+"([^"]+)"', text):
             path = match.group(1)
             roots.append(path.replace("\\\\", "\\") if IS_WINDOWS else path)
@@ -129,6 +178,8 @@ def _dedupe(paths):
         if not path:
             continue
         normalized = os.path.normcase(os.path.abspath(path))
+        if not IS_WINDOWS:
+            normalized = os.path.realpath(normalized)
         if normalized not in seen:
             seen.add(normalized)
             out.append(path)
@@ -174,6 +225,80 @@ def _safe_addon_id(filename, used, source_key=None, workshop=False):
     return candidate
 
 
+def workshop_content_dirs(l4d2):
+    """Carpetas steamapps/workshop/content/550 de la biblioteca del juego.
+
+    En Linux (Bazzite/Fedora incluidos) Steam puede dejar los VPK solo aqui y
+    no en left4dead2/addons/workshop. Se prueba la ruta tal cual y su realpath.
+    """
+    found = []
+    for base in (os.path.abspath(l4d2), os.path.realpath(l4d2)):
+        steamapps = os.path.dirname(os.path.dirname(base))
+        if os.path.basename(steamapps).casefold() != "steamapps":
+            continue
+        path = os.path.join(steamapps, "workshop", "content", "550")
+        if path not in found:
+            found.append(path)
+    return found
+
+
+def workshop_detected(l4d2):
+    """True si existe alguna carpeta de Workshop reconocible."""
+    if not l4d2:
+        return False
+    if os.path.isdir(os.path.join(l4d2, "left4dead2", "addons", "workshop")):
+        return True
+    return any(os.path.isdir(path) for path in workshop_content_dirs(l4d2))
+
+
+def _scan_workshop_content(l4d2, used_ids, seen_paths):
+    """VPK de steamapps/workshop/content/550/<id>/ que no estan ya en addons."""
+    found = []
+    for content in workshop_content_dirs(l4d2):
+        if not os.path.isdir(content):
+            continue
+        try:
+            folders = sorted(os.listdir(content), key=str.casefold)
+        except OSError:
+            continue
+        for folder_id in folders:
+            if not re.fullmatch(r"[0-9]+", folder_id):
+                continue
+            if folder_id.casefold() in used_ids:
+                continue  # addons/workshop tiene prioridad (misma identidad).
+            folder = os.path.join(content, folder_id)
+            try:
+                vpks = sorted((name for name in os.listdir(folder)
+                               if name.lower().endswith(".vpk")
+                               and os.path.isfile(os.path.join(folder, name))),
+                              key=str.casefold)
+            except OSError:
+                continue
+            if not vpks:
+                continue
+            preferred = folder_id + ".vpk"
+            filename = preferred if preferred in vpks else vpks[0]
+            path = os.path.join(folder, filename)
+            real = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+            if real in seen_paths:
+                continue
+            try:
+                info = os.stat(path)
+            except OSError:
+                continue
+            seen_paths.add(real)
+            used_ids.add(folder_id.casefold())
+            found.append({
+                "id": folder_id,
+                "path": path,
+                "size": info.st_size,
+                "ctime": info.st_ctime,
+                "mtime_ns": info.st_mtime_ns,
+                "source_kind": "workshop",
+            })
+    return found
+
+
 def list_addons(l4d2):
     addons_path = os.path.join(l4d2, "left4dead2", "addons")
     scan_dirs = [
@@ -210,6 +335,7 @@ def list_addons(l4d2):
                     "mtime_ns": info.st_mtime_ns,
                     "source_kind": 'workshop' if is_workshop else 'local',
                 })
+    out.extend(_scan_workshop_content(l4d2, used_ids, seen_paths))
     return apply_aliases(l4d2, out)
 
 
