@@ -9,6 +9,8 @@ sys.path.insert(0, ROOT)
 
 import l4d2_core as core
 import l4d2_glows
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import legacy_glows
 
 
 GAMEINFO = """GameInfo
@@ -135,8 +137,7 @@ class CoreFileFlowTests(unittest.TestCase):
         autoexec = os.path.join(cfg, "autoexec.cfg")
         with open(autoexec, "w", encoding="utf-8") as file:
             file.write("mat_monitorgamma 1.6\n")
-        self.assertTrue(l4d2_glows.apply_glows(
-            self.l4d2, l4d2_glows.default_colors(), log=lambda msg: None))
+        self.assertTrue(legacy_glows.apply(self.l4d2, log=lambda msg: None))
 
         self.assertTrue(core.restore(self.l4d2, log=lambda msg: None))
 

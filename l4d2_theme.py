@@ -16,6 +16,8 @@ AMBER = "#F59E0B"
 AMBER_SOFT = "#2E2416"
 VSCRIPT_BG = "#3A3A46"
 VSCRIPT_TEXT = "#D6D6DC"
+PACK_BG = "#1D3550"
+PACK_TEXT = "#9FD8FF"
 
 CATEGORIES = ["Todos", "Favoritos", "Skins", "Armas", "Sonido", "UI",
               "VScripts", "Otro"]

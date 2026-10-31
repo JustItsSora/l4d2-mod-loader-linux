@@ -149,6 +149,24 @@ def _title_from_tree(path, tree, data_start):
     return None
 
 
+def read_vpk_index(path):
+    """Indice {ruta: tamaño} de los archivos guardados en el arbol del VPK.
+
+    Solo se lee el arbol (no los datos), asi que es barato incluso con packs
+    de varios gigabytes. Devuelve None si el VPK no se puede leer.
+    """
+    tree, data_start = _read_vpk_tree(path)
+    if tree is None:
+        return None
+    index = {}
+    try:
+        for extension, directory, name, preload, archive, offset, length in _entries(tree):
+            index[(directory.lower(), name.lower(), extension.lower())] = length
+    except (ValueError, struct.error):
+        return None
+    return index
+
+
 def inspect_vpk(path):
     tree, data_start = _read_vpk_tree(path)
     if tree is None:

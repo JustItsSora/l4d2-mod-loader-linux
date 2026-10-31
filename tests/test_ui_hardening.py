@@ -105,8 +105,6 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.patches.enter_context(mock.patch.object(
             app, "_cfg_path", side_effect=lambda name: str(ROOT / "unused" / name)))
         self.patches.enter_context(mock.patch.object(
-            app.l4d2_glows, "load_colors", return_value=app.l4d2_glows.default_colors()))
-        self.patches.enter_context(mock.patch.object(
             app.l4d2_glows, "is_applied", return_value=False))
         self.patches.enter_context(mock.patch.object(
             app.core, "suggest_dependencies", wraps=app.core.suggest_dependencies))
@@ -345,6 +343,45 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("parcial" in m.lower() for m in self.messages()))
         self.assertFalse(any(d.open for d in self.page.dialogs))
 
+    async def test_use_preset_applies_exclusive_modpack_off_ui_thread(self):
+        self.ui["close_progress"](self.state["_load_progress"])
+        await self.page.animations()
+        self.state.update(l4d2="unused", active_ids={"3"},
+                          addons=[self.addon("1"), self.addon("2"), self.addon("3")],
+                          presets={"Pack": ["1", "2", "9"]})
+        app.core.currently_enabled.return_value = {"1", "2"}
+        calls = []
+        ui_thread = threading.get_ident()
+
+        def apply(l4d2, addons, log):
+            calls.append((threading.get_ident(), [a["id"] for a in addons]))
+            return True
+
+        with mock.patch.object(app.core, "apply_modpack", side_effect=apply):
+            self.ui["use_preset"]("Pack")
+            self.assertTrue(self.page.dialogs[-1].open)
+            self.page.dialogs[-1].actions[-1].on_click(None)
+            self.assertEqual(calls, [], "confirmation must return before disk work")
+            await self.page.run_named("_run_modpack")
+            await self.page.animations()
+        self.assertEqual([ids for _, ids in calls], [["1", "2"]])
+        self.assertNotIn(ui_thread, [thread for thread, _ in calls])
+        self.assertEqual(self.state["active_ids"], {"1", "2"})
+        self.assertTrue(any("Pack" in m and "1 no instalado" in m for m in self.messages()))
+
+    async def test_use_preset_does_nothing_while_game_runs_or_pack_is_empty(self):
+        self.ui["close_progress"](self.state["_load_progress"])
+        await self.page.animations()
+        self.state.update(l4d2="unused", addons=[self.addon("1")],
+                          presets={"Pack": ["1"], "Gone": ["77"]})
+        dialogs = len(self.page.dialogs)
+        self.state["_l4d2_was_running"] = True
+        self.ui["use_preset"]("Pack")
+        self.state["_l4d2_was_running"] = False
+        self.ui["use_preset"]("Gone")
+        self.assertEqual(len(self.page.dialogs), dialogs)
+        self.assertFalse(self.state["selected_ids"])
+
     async def test_restore_opening_does_not_probe_process_on_ui_thread(self):
         self.state.update(l4d2="unused", addons=[self.addon()], last_config={"ids": ["1"]})
         calls = []
@@ -389,11 +426,6 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.state["manual_l4d2_path"])
         self.assertFalse(any("guardada" in msg for msg in self.messages()))
 
-    async def test_config_directory_error_does_not_crash_startup(self):
-        with mock.patch.object(app.l4d2_glows, "load_colors", side_effect=PermissionError("denied")):
-            ui = self.start(FakePage())
-        self.assertTrue(ui["state"]["glow_colors"])
-
     async def test_preview_requests_are_shared(self):
         addon = self.addon(_preview_url="https://example.invalid/image")
         self.state["addons"] = [addon]
@@ -420,15 +452,6 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
                 release.set()
                 await asyncio.gather(*jobs)
             self.assertEqual(paint.call_count, 2)
-
-    async def test_hex_focus_preserves_field_identity(self):
-        self.ui["switch_view"]("glows")
-        root = self.ui["list_view"].controls[0]
-        field = next(c for c in descendants(root) if isinstance(c, ft.TextField))
-        if field.on_focus:
-            field.on_focus(SimpleNamespace(control=field))
-        self.assertTrue(self.ui["list_view"].controls[0] is root)
-        self.assertTrue(any(c is field for c in descendants(root)))
 
     async def test_active_view_ignores_hidden_category(self):
         self.state.update(addons=[self.addon()], active_ids={"1"},
@@ -495,7 +518,7 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.ui['sync_active_state']('old', self.state['_load_generation']))
         self.assertEqual(self.state['active_ids'], {'other'})
 
-    async def test_unreadable_glows_keeps_local_list_and_blocks_mutations(self):
+    async def test_unreadable_legacy_glows_never_block_mutations(self):
         with mock.patch.object(app.core, "find_l4d2", return_value="unused"), \
                 mock.patch.object(app.core, "list_addons", return_value=[self.addon()]), \
                 mock.patch.object(app.core, "inspect_vpk", return_value={"title": "Test", "is_vscript": False}), \
@@ -503,7 +526,21 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(app.l4d2_glows, "is_applied", side_effect=OSError("unreadable")):
             await self.page.run_named("_load")
         self.assertEqual([a["id"] for a in self.state["addons"]], ["1"])
-        self.assertFalse(await self.ui["require_game_closed"]())
+        self.assertTrue(await self.ui["require_game_closed"]())
+
+    async def test_legacy_glows_are_retired_when_game_is_closed(self):
+        with mock.patch.object(app.l4d2_glows, "is_applied", return_value=True), \
+                mock.patch.object(app.l4d2_glows, "restore_glows", return_value=True) as restore:
+            app.core.l4d2_running.return_value = False
+            await self.ui["retire_legacy_glows"]("unused")
+        restore.assert_called_once()
+
+    async def test_legacy_glows_are_kept_while_game_runs(self):
+        with mock.patch.object(app.l4d2_glows, "is_applied", return_value=True), \
+                mock.patch.object(app.l4d2_glows, "restore_glows", return_value=True) as restore:
+            app.core.l4d2_running.return_value = True
+            await self.ui["retire_legacy_glows"]("unused")
+        restore.assert_not_called()
 
     async def test_orphan_cleanup_worker_reports_remaining(self):
         self.state["l4d2"] = "unused"

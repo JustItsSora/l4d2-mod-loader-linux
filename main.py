@@ -9,7 +9,6 @@ import l4d2_core as core
 import l4d2_detail_panel
 import l4d2_diagnostics as diagnostics
 import l4d2_glows
-import l4d2_glows_view
 import l4d2_sidebar
 import l4d2_state
 import l4d2_ui as ui
@@ -83,16 +82,6 @@ def main(page: ft.Page):
 
     state = l4d2_state.create_initial_state(_cfg_path)
     startup_warning = None
-    try:
-        state["glow_colors"] = l4d2_glows.load_colors()
-    except Exception as ex:
-        dbg("load colors ERR %r" % ex)
-        state["glow_colors"] = l4d2_glows.default_colors()
-        startup_warning = "No se pudo leer la configuración de glows."
-    state["glow_dirty"] = False
-    state["glow_applied"] = False
-    state["glow_preset"] = "Personalizado"
-    state["selected_glow_key"] = "survivor_health_high"
     folder_picker = ft.FilePicker()
     try:
         page.services.append(folder_picker)
@@ -534,9 +523,13 @@ def main(page: ft.Page):
     def pane_set(pane, addon):
         pane["current_id"] = addon["id"]
         pane["title"].value = addon.get("title") or addon["id"]
+        kind = ("PACK" if addon.get("is_pack") else
+                ("VSCRIPT" if addon["is_vscript"] else "MOD"))
         pane["meta"].value = "%s  ·  %s  ·  %s" % (
-            addon["id"], core.fmt_size(addon["size"]),
-            "VSCRIPT" if addon["is_vscript"] else "MOD")
+            addon["id"], core.fmt_size(addon["size"]), kind)
+        members = addon.get("pack_members") or []
+        if members:
+            pane["meta"].value += "  ·  %d mods incluidos" % len(members)
         if pane["desc"]:
             pane["desc"].value = (addon.get("description")
                                   or "Sin descripción disponible.")
@@ -799,9 +792,6 @@ def main(page: ft.Page):
         if not state["l4d2"]:
             notify("No se encontró L4D2.", "warn")
             return
-        if state.get("_glow_status_error"):
-            notify("No se pudo comprobar la configuración de glows.", "err")
-            return
         if state["_l4d2_was_running"] is True:
             notify("Cierre L4D2 antes de restaurar la configuración.", "warn")
             return
@@ -833,8 +823,6 @@ def main(page: ft.Page):
                 error = None
                 actual = None
                 try:
-                    if state.get("_glow_status_error"):
-                        raise RuntimeError("No se pudo comprobar la configuración de glows.")
                     if await asyncio.to_thread(core.l4d2_running):
                         raise RuntimeError("Cierre L4D2 antes de aplicar la configuración.")
                     current_ids = set(await asyncio.to_thread(core.currently_enabled, l4d2))
@@ -1362,7 +1350,6 @@ def main(page: ft.Page):
         titles = {
             "mods": "Mods en Versus",
             "activos": "Addons activos",
-            "glows": "Glows",
         }
         view_title.value = titles.get(v, "Mods en Versus")
         header_actions.content = build_header_actions()
@@ -1419,8 +1406,6 @@ def main(page: ft.Page):
             ft.ControlState.DEFAULT: BG,
             ft.ControlState.DISABLED: TEXT_DIM,
         }
-        if state["view"] == "glows":
-            return ft.Row([], spacing=8)
         if state["view"] == "activos":
             remove_button_ref[0] = ft.FilledButton(
                 "Quitar addon", on_click=do_quitar_addon,
@@ -1521,14 +1506,7 @@ def main(page: ft.Page):
                        "err")
                 return
 
-            try:
-                state["glow_applied"] = await asyncio.to_thread(l4d2_glows.is_applied, l4d2)
-                state["_glow_status_error"] = None
-            except (OSError, ValueError) as ex:
-                state["glow_applied"] = None
-                state["_glow_status_error"] = str(ex) or type(ex).__name__
-                notify("No se pudo comprobar la configuración de glows. "
-                       "Recarga los mods tras corregir el archivo: %s" % ex, "warn")
+            await retire_legacy_glows(l4d2)
             status_dot.bgcolor = ACCENT
             status_text.value = os.path.basename(l4d2)
             status_text.tooltip = l4d2
@@ -1541,17 +1519,29 @@ def main(page: ft.Page):
             if pending_legacy:
                 notify('Hay addons antiguos sin origen verificable; se conservaron sus archivos.', 'warn')
             raw = await asyncio.to_thread(core.list_addons, l4d2)
+            workshop = [a for a in raw if a.get("source_kind") == "workshop"]
             for addon in raw:
                 info = await asyncio.to_thread(core.inspect_vpk, addon["path"])
                 addon["title"] = info["title"]
                 addon["is_vscript"] = info["is_vscript"]
-                addon["type"] = "VSCRIPT" if addon["is_vscript"] else "MOD"
                 addon["category"] = core.categorize(
                     addon["title"] or addon["id"], addon["id"])
                 addon["description"] = None
                 addon["preview_local"] = None
                 addon["_preview_url"] = None
                 addon["auto_deps"] = []
+                members = []
+                is_pack = False
+                if addon.get("source_kind") == "local" and workshop:
+                    found = await asyncio.to_thread(
+                        core.detect_pack_members, addon["path"], workshop)
+                    if core.is_modpack(found):
+                        members = sorted(found)
+                        is_pack = True
+                addon["pack_members"] = members
+                addon["is_pack"] = is_pack
+                addon["type"] = ("PACK" if is_pack else
+                                 ("VSCRIPT" if addon["is_vscript"] else "MOD"))
 
             if not ui.request_is_current(
                     generation, state["_load_generation"], state["_closing"]):
@@ -1660,12 +1650,28 @@ def main(page: ft.Page):
 
     cleanup_lock = asyncio.Lock()
 
+    async def retire_legacy_glows(l4d2):
+        """Los glows ya no existen en el loader: retira los de versiones anteriores.
+
+        Solo se quita el cfg y el bloque que el propio loader creo en
+        autoexec.cfg; los glows que traen los modpacks quedan intactos.
+        """
+        try:
+            if not await asyncio.to_thread(l4d2_glows.is_applied, l4d2):
+                return
+            if await asyncio.to_thread(core.l4d2_running):
+                dbg("legacy glows pending: game running")
+                return
+            if await asyncio.to_thread(l4d2_glows.restore_glows, l4d2, debug_log):
+                notify("Se retiraron los glows del loader para no afectar a los modpacks.", "ok")
+        except Exception as ex:
+            dbg("legacy glows cleanup ERR %r" % ex)
+
     async def cleanup_orphans_async(l4d2, generation):
         removed, pending, error = [], None, None
         async with cleanup_lock:
             if not ui.request_is_current(
-                    generation, state["_load_generation"], state["_closing"]) \
-                    or state.get("_glow_status_error"):
+                    generation, state["_load_generation"], state["_closing"]):
                 return
             try:
                 running = None
@@ -1798,11 +1804,6 @@ def main(page: ft.Page):
     def refresh_list(sync_active=False):
         dbg("refresh_list")
 
-        if state["view"] == "glows":
-            render_glows_view()
-            safe_update()
-            return
-
         search_field.visible = True
         filters_row.visible = state["view"] == "mods"
         list_toolbar.visible = state["view"] == "mods"
@@ -1887,10 +1888,21 @@ def main(page: ft.Page):
                 dependency_addon = get_addon(dependency)
                 if dependency_addon and dependency not in state["active_ids"]:
                     state["selected_ids"].add(dependency)
+            removed = _exclude_pack_members(addon)
+            if removed:
+                notify("El modpack ya incluye %d mod(s) del Workshop: "
+                       "se quitaron de la selección." % removed, "warn")
         else:
             state["selected_ids"].discard(addon["id"])
         update_selection_controls()
         safe_update()
+
+    def _exclude_pack_members(addon):
+        members = [m for m in (addon.get("pack_members") or [])
+                   if m in state["selected_ids"]]
+        for member in members:
+            state["selected_ids"].discard(member)
+        return len(members)
 
     def search_changed(e):
         value = e.control.value or ""
@@ -1925,9 +1937,6 @@ def main(page: ft.Page):
     search_field.on_change = search_changed
 
     async def require_game_closed():
-        if state.get("_glow_status_error"):
-            notify("No se puede modificar L4D2 hasta comprobar su configuración de glows.", "err")
-            return False
         if state.get('_checking_game'):
             return False
         generation, game = state['_load_generation'], state['l4d2']
@@ -1991,494 +2000,6 @@ def main(page: ft.Page):
         if progress.get("content"):
             close_dialog_anim(progress["content"])
 
-    def on_glow_color_changed(key, value):
-        state["selected_glow_key"] = key
-        state["glow_colors"][key] = value
-        state["glow_dirty"] = True
-        counts_text.value = "Glows: cambios sin aplicar"
-        footer_selection_text.value = "Glows pendientes"
-        safe_update()
-
-    def select_glow_color(key, rebuild=True):
-        state["selected_glow_key"] = key
-        if rebuild:
-            render_glows_view()
-        safe_update()
-
-    def open_glow_color_picker(key, label):
-        state["selected_glow_key"] = key
-        current = state["glow_colors"].get(
-            key, l4d2_glows.default_colors().get(key, "#FFFFFF"))
-        try:
-            current = l4d2_glows.normalize_hex(current)
-        except ValueError:
-            current = "#FFFFFF"
-        selected_value = [current]
-        preview = ft.Container(
-            width=156,
-            height=112,
-            bgcolor=current,
-            border_radius=12,
-            border=ft.Border.all(1, "#FFFFFF33"),
-            shadow=ft.BoxShadow(
-                blur_radius=20,
-                color=current + "66",
-                offset=ft.Offset(0, 0),
-            ),
-        )
-        current_chip = ft.Container(
-            width=42,
-            height=28,
-            bgcolor=current,
-            border_radius=7,
-            border=ft.Border.all(1, "#FFFFFF33"),
-        )
-        new_color_text = ft.Text(current, size=12, color=TEXT_DIM,
-                                 weight=ft.FontWeight.W_700)
-        custom_visible = [False]
-        slider_controls = []
-        slider_value_labels = []
-        hex_field = ft.TextField(
-            value=current,
-            label="HEX",
-            width=156,
-            height=44,
-            text_size=13,
-            color=TEXT,
-            bgcolor="#10131A",
-            border_color=BORDER,
-            focused_border_color=ACCENT,
-            content_padding=ft.Padding.symmetric(horizontal=10, vertical=8),
-        )
-
-        def _apply_preview(value):
-            try:
-                normalized = l4d2_glows.normalize_hex(value)
-            except ValueError:
-                hex_field.border_color = DANGER
-                return None
-            hex_field.border_color = BORDER
-            selected_value[0] = normalized
-            preview.bgcolor = normalized
-            preview.shadow = ft.BoxShadow(
-                blur_radius=20,
-                color=normalized + "66",
-                offset=ft.Offset(0, 0),
-            )
-            new_color_text.value = normalized
-            _refresh_swatch_borders(normalized)
-            rgb_values = [int(round(v * 255))
-                          for v in l4d2_glows.hex_to_rgb_values(normalized)]
-            for slider, label_ctrl, rgb_value in zip(
-                    slider_controls, slider_value_labels, rgb_values):
-                slider.value = rgb_value
-                label_ctrl.value = str(rgb_value)
-            return normalized
-
-        def _hex_changed(e=None):
-            _apply_preview(hex_field.value)
-            try:
-                page.update()
-            except Exception:
-                pass
-
-        hex_field.on_change = _hex_changed
-
-        swatch_values = [
-            "#FF1A1A", "#FF6200", "#FFD000", "#00FF40",
-            "#20D97B", "#00A2FF", "#4D75FF", "#9B5CFF",
-            "#FF00D4", "#D414C7", "#B2B2FF", "#FFFFFF",
-            "#8A93A3", "#242936", "#10131A", "#000000",
-        ]
-        swatch_controls = []
-        rgb = [int(round(value * 255))
-               for value in l4d2_glows.hex_to_rgb_values(current)]
-
-        def _refresh_swatch_borders(active_color):
-            for swatch, value in swatch_controls:
-                swatch.border = ft.Border.all(
-                    2, ACCENT if value == active_color else "#FFFFFF22")
-
-        def _choose_swatch(value):
-            hex_field.value = value
-            _apply_preview(value)
-            try:
-                page.update()
-            except Exception:
-                pass
-
-        def _make_swatch(value):
-            swatch = ft.Container(
-                width=34,
-                height=34,
-                bgcolor=value,
-                border_radius=8,
-                border=ft.Border.all(
-                    2, ACCENT if value == current else "#FFFFFF22"),
-                ink=True,
-                tooltip=value,
-                on_click=lambda e, color=value: _choose_swatch(color),
-            )
-            swatch_controls.append((swatch, value))
-            return swatch
-
-        def _swatch_row(values):
-            return ft.Row(
-                [_make_swatch(value) for value in values],
-                spacing=8,
-                alignment=ft.MainAxisAlignment.START,
-            )
-
-        palette = ft.Column(
-            [
-                _swatch_row(swatch_values[:8]),
-                _swatch_row(swatch_values[8:]),
-            ],
-            spacing=8,
-        )
-
-        def _hex_from_rgb():
-            return "#%02X%02X%02X" % tuple(
-                int(round(slider.value or 0)) for slider in slider_controls)
-
-        def _slider_changed(e=None):
-            value = _hex_from_rgb()
-            hex_field.value = value
-            _apply_preview(value)
-            try:
-                page.update()
-            except Exception:
-                pass
-
-        def _slider_row(name, value, color):
-            value_label = ft.Text(str(value), width=32, size=11,
-                                  color=TEXT_DIM,
-                                  weight=ft.FontWeight.W_700)
-            slider = ft.Slider(
-                min=0,
-                max=255,
-                value=value,
-                divisions=255,
-                label="{value}",
-                active_color=color,
-                on_change=_slider_changed,
-            )
-            slider_controls.append(slider)
-            slider_value_labels.append(value_label)
-            return ft.Row(
-                [
-                    ft.Text(name, width=18, size=12, color=TEXT_DIM,
-                            weight=ft.FontWeight.W_700),
-                    slider,
-                    value_label,
-                ],
-                spacing=8,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            )
-
-        custom_panel = ft.Container(
-            content=ft.Column(
-                [
-                    _slider_row("R", rgb[0], "#FF4D4D"),
-                    _slider_row("G", rgb[1], ACCENT),
-                    _slider_row("B", rgb[2], "#4D75FF"),
-                ],
-                spacing=0,
-            ),
-            visible=False,
-            bgcolor="#0B0E14",
-            border=ft.Border.all(1, BORDER),
-            border_radius=10,
-            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
-        )
-        custom_button_label = ft.Text(
-            "Custom", size=12, color=TEXT,
-            weight=ft.FontWeight.W_700)
-
-        def _toggle_custom(e=None):
-            custom_visible[0] = not custom_visible[0]
-            custom_panel.visible = custom_visible[0]
-            custom_button_label.value = (
-                "Ocultar custom" if custom_visible[0] else "Custom")
-            try:
-                page.update()
-            except Exception:
-                pass
-
-        custom_button = ft.Container(
-            content=ft.Row(
-                [
-                    ft.Icon(ft.Icons.TUNE, size=15, color=TEXT),
-                    custom_button_label,
-                ],
-                spacing=6,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            height=34,
-            padding=ft.Padding.symmetric(horizontal=11, vertical=6),
-            bgcolor=SURFACE_2,
-            border=ft.Border.all(1, BORDER),
-            border_radius=8,
-            ink=True,
-            on_click=_toggle_custom,
-            tooltip="Ajustar con sliders RGB",
-        )
-
-        def confirm_color():
-            normalized = _apply_preview(hex_field.value)
-            if not normalized:
-                notify("Color inválido. Usa formato #RRGGBB.", "err")
-                return
-            on_glow_color_changed(key, normalized)
-            render_glows_view()
-            close_dialog_anim(cnt)
-            safe_update()
-
-        cnt = ft.Container(
-            content=ft.Column(
-                [
-                    modal_header(
-                        ft.Icons.PALETTE_OUTLINED
-                        if hasattr(ft.Icons, "PALETTE_OUTLINED")
-                        else ft.Icons.COLOR_LENS,
-                        "Elegir color",
-                        label,
-                        ACCENT,
-                    ),
-                    ft.Row(
-                        [
-                            preview,
-                            ft.Column(
-                                [
-                                    ft.Row(
-                                        [
-                                            current_chip,
-                                            ft.Column(
-                                                [
-                                                    ft.Text(
-                                                        "Actual",
-                                                        size=10,
-                                                        color=TEXT_DIM,
-                                                    ),
-                                                    ft.Text(
-                                                        current,
-                                                        size=12,
-                                                        color=TEXT,
-                                                        weight=ft.FontWeight.W_700,
-                                                    ),
-                                                ],
-                                                spacing=1,
-                                            ),
-                                        ],
-                                        spacing=10,
-                                        vertical_alignment=(
-                                            ft.CrossAxisAlignment.CENTER),
-                                    ),
-                                    hex_field,
-                                    new_color_text,
-                                ],
-                                spacing=8,
-                                expand=True,
-                            ),
-                        ],
-                        spacing=14,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    ft.Container(
-                        content=ft.Column(
-                            [
-                                ft.Row(
-                                    [
-                                        ft.Text("Colores rápidos", size=11,
-                                                color=TEXT_DIM,
-                                                weight=ft.FontWeight.W_700),
-                                        ft.Container(expand=True),
-                                        custom_button,
-                                    ],
-                                    vertical_alignment=(
-                                        ft.CrossAxisAlignment.CENTER),
-                                ),
-                                palette,
-                                custom_panel,
-                            ],
-                            spacing=10,
-                        ),
-                        bgcolor="#10131A",
-                        border=ft.Border.all(1, BORDER),
-                        border_radius=10,
-                        padding=12,
-                    ),
-                    ft.Row(
-                        [
-                            ft.Container(expand=True),
-                            ft.TextButton(
-                                "Cancelar",
-                                on_click=lambda ev: close_dialog_anim(cnt),
-                                style=ft.ButtonStyle(
-                                    color="#A7C7FF",
-                                    padding=ft.Padding.symmetric(
-                                        horizontal=12, vertical=10),
-                                ),
-                            ),
-                            ft.FilledButton(
-                                "Usar color",
-                                icon=ft.Icons.CHECK,
-                                on_click=lambda ev: confirm_color(),
-                                style=ft.ButtonStyle(
-                                    bgcolor=ACCENT,
-                                    color=BG,
-                                    shape=ft.RoundedRectangleBorder(radius=8),
-                                    padding=ft.Padding.symmetric(
-                                        horizontal=16, vertical=10),
-                                ),
-                            ),
-                        ],
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                ],
-                spacing=16,
-                tight=True,
-            ),
-            width=460,
-            padding=20,
-            bgcolor="#24282F",
-            border_radius=18,
-        )
-        dlg = ft.AlertDialog(
-            content=cnt,
-            actions=[],
-            modal=True,
-        )
-        show_dlg(dlg)
-        animate_display(cnt)
-
-    def apply_glow_preset(name):
-        preset = l4d2_glows.PRESETS.get(name)
-        if not preset:
-            return
-        state["glow_colors"] = dict(preset)
-        state["glow_preset"] = name
-        state["glow_dirty"] = True
-        render_glows_view()
-        safe_update()
-
-    def render_glows_view():
-        search_field.visible = False
-        filters_row.visible = False
-        list_toolbar.visible = False
-        preview_panel.visible = False
-        state["_render_signature"] = None
-        counts_text.value = (
-            "Edita colores y aplica el cfg gestionado por el loader"
-        )
-        footer_selection_text.value = (
-            "Cambios sin aplicar" if state["glow_dirty"]
-            else "Glows aplicados" if state["glow_applied"]
-            else "Glows sin aplicar"
-        )
-        list_view.controls = [
-            l4d2_glows_view.build_glows_view(
-                state["glow_colors"],
-                state["glow_applied"],
-                state["glow_dirty"],
-                on_change=on_glow_color_changed,
-                on_apply=do_apply_glows,
-                on_restore=do_restore_glows,
-                on_preset=apply_glow_preset,
-                on_pick_color=open_glow_color_picker,
-                on_select_color=select_glow_color,
-                selected_key=state.get("selected_glow_key"),
-            )
-        ]
-
-    async def do_apply_glows(e=None):
-        if not state["l4d2"]:
-            notify("No se encontró L4D2.", "warn")
-            return
-        if not await require_game_closed():
-            return
-        try:
-            colors = l4d2_glows.normalized_colors(state["glow_colors"])
-        except ValueError as ex:
-            notify(str(ex), "err")
-            return
-        progress = show_progress(
-            "Aplicando glows...",
-            "Creando cfg y enlazándolo desde autoexec.cfg.",
-        )
-
-        async def _run():
-            try:
-                ok = await asyncio.to_thread(
-                    l4d2_glows.apply_glows,
-                    state["l4d2"],
-                    colors,
-                    state.get("glow_preset"),
-                    debug_log,
-                )
-            except Exception as ex:
-                ok = False
-                dbg("apply glows ERR %r" % ex)
-            if state["_closing"]:
-                return
-            close_progress(progress)
-            if ok:
-                state["glow_colors"] = colors
-                state["glow_dirty"] = False
-                state["glow_applied"] = True
-                render_glows_view()
-                notify("Glows aplicados. Reinicia L4D2 si estaba abierto.",
-                       "ok")
-            else:
-                notify("No se pudieron aplicar los glows.", "err")
-            safe_update()
-
-        try:
-            track_task(page.run_task(_run))
-        except Exception as ex:
-            dbg("apply glows task ERR %r" % ex)
-            close_progress(progress)
-            notify("No se pudieron aplicar los glows.", "err")
-
-    async def do_restore_glows(e=None):
-        if not state["l4d2"]:
-            notify("No se encontró L4D2.", "warn")
-            return
-        if not await require_game_closed():
-            return
-        progress = show_progress(
-            "Restaurando glows...",
-            "Quitando únicamente el cfg y bloque creados por el loader.",
-        )
-
-        async def _run():
-            try:
-                ok = await asyncio.to_thread(
-                    l4d2_glows.restore_glows, state["l4d2"], debug_log)
-            except Exception as ex:
-                ok = False
-                dbg("restore glows ERR %r" % ex)
-            if state["_closing"]:
-                return
-            close_progress(progress)
-            if ok:
-                state["glow_dirty"] = False
-                state["glow_applied"] = False
-                render_glows_view()
-                notify("Glows restaurados; se conservaron configs ajenas.",
-                       "ok")
-            else:
-                notify("No se pudieron restaurar los glows.", "err")
-            safe_update()
-
-        try:
-            track_task(page.run_task(_run))
-        except Exception as ex:
-            dbg("restore glows task ERR %r" % ex)
-            close_progress(progress)
-            notify("No se pudieron restaurar los glows.", "err")
-
     async def do_enable(e):
         if not await require_game_closed():
             return
@@ -2531,10 +2052,27 @@ def main(page: ft.Page):
                 add_row(da, True, parents)
 
         n_deps = len(extra_deps)
+        pack_addons = [a for a in chosen if a.get("is_pack")]
+        pack_members = set()
+        for pack in pack_addons:
+            pack_members.update(pack.get("pack_members") or [])
         banner = None
+        if pack_addons:
+            names = ", ".join((a.get("title") or a["id"]) for a in pack_addons)
+            banner = ft.Container(
+                content=ft.Text(
+                    "El modpack %s ya incluye %d mod(s) del Workshop.\n"
+                    "Se activara solo el modpack y se desactivaran esos mods."
+                    % (names, len(pack_members)),
+                    size=11, color=ACCENT),
+                bgcolor=ACCENT_SOFT,
+                border=ft.Border.all(1, ACCENT),
+                border_radius=8,
+                padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+            )
         if vscripts:
             names = _short_names(vscripts)
-            banner = ft.Container(
+            vscript_banner = ft.Container(
                 content=ft.Text(
                     "Los VScripts NO funcionan con este método de habilitación;\n"
                     "se omitirán: " + names,
@@ -2544,6 +2082,10 @@ def main(page: ft.Page):
                 border_radius=8,
                 padding=ft.Padding.symmetric(horizontal=10, vertical=8),
             )
+            if banner is None:
+                banner = vscript_banner
+            else:
+                banner = ft.Column([banner, vscript_banner], spacing=8)
 
         def confirm_enable():
             sel_ids = [a["id"] for a, box in rows if box and box.value]
@@ -2561,7 +2103,13 @@ def main(page: ft.Page):
                     omitted += 1
                 else:
                     compat_addons.append(da)
-            if not compat_addons:
+            packs = [a for a in compat_addons if a.get("is_pack")]
+            members = set()
+            for pack in packs:
+                members.update(pack.get("pack_members") or [])
+            compat_addons = [a for a in compat_addons
+                             if not a.get("is_pack") and a["id"] not in members]
+            if not compat_addons and not packs:
                 close_dialog_anim(cnt, pane)
                 notify("Ningún addon compatible seleccionado.", "warn")
                 return
@@ -2574,8 +2122,16 @@ def main(page: ft.Page):
             async def _run_enable():
                 try:
                     await save_last_config_async("Antes de habilitar addons", state["l4d2"])
-                    ok = await asyncio.to_thread(
-                        core.enable, state["l4d2"], compat_addons, debug_log)
+                    ok = True
+                    if compat_addons:
+                        ok = await asyncio.to_thread(
+                            core.enable, state["l4d2"], compat_addons, debug_log)
+                    for pack in packs:
+                        if not ok:
+                            break
+                        ok = await asyncio.to_thread(
+                            core.apply_pack, state["l4d2"], dict(pack),
+                            list(pack.get("pack_members") or []), debug_log)
                 except Exception as ex:
                     ok = False
                     dbg("enable async ERR %r" % ex)
@@ -2583,12 +2139,15 @@ def main(page: ft.Page):
                     return
                 close_progress(progress)
                 if ok:
-                    for c in compat_addons:
+                    for c in compat_addons + packs:
                         state["selected_ids"].discard(c["id"])
                     refresh_list(sync_active=True)
+                    total = len(compat_addons) + len(packs)
                     msg = "%s habilitado%s correctamente" % (
-                        _quant(len(compat_addons), "addon", "addons"),
-                        "" if len(compat_addons) == 1 else "s")
+                        _quant(total, "addon", "addons"),
+                        "" if total == 1 else "s")
+                    if packs:
+                        msg += "  ·  %d modpack(s)" % len(packs)
                     if omitted:
                         msg += "  ·  %d VScript omitido(s)" % omitted
                     notify(msg, "ok")
@@ -3040,7 +2599,7 @@ def main(page: ft.Page):
                             spacing=2,
                             expand=True,
                         ),
-                        ft.TextButton("Usar",
+                        ft.TextButton("Aplicar",
                                       on_click=lambda ev, n=name: use_preset(n),
                                       style=ft.ButtonStyle(color=ACCENT)),
                         ft.TextButton("Quitar",
@@ -3090,7 +2649,7 @@ def main(page: ft.Page):
                                 content=modal_header(
                                     ft.Icons.SAVE_OUTLINED,
                                     "Presets",
-                                    "Guarda y reutiliza selecciones de addons.",
+                                    "Un modpack deja activos solo sus addons.",
                                     ACCENT),
                                 expand=True,
                             ),
@@ -3152,14 +2711,129 @@ def main(page: ft.Page):
             name, _quant(n, "addon", "addons")), "ok")
 
     def use_preset(name):
+        """Aplica un modpack: quedan activos solo sus addons, no los demas."""
         hide_card()
-        ids = [i for i in (state["presets"].get(name) or [])
-               if get_addon(i) and i not in state["active_ids"]]
-        state["selected_ids"] = set(ids)
-        refresh_list()
-        notify("Preset aplicado: %s seleccionado%s" % (
-            _quant(len(ids), "addon", "addons"),
-            "" if len(ids) == 1 else "s"), "ok")
+        if not state["l4d2"]:
+            notify("No se encontró L4D2.", "warn")
+            return
+        if state["_l4d2_was_running"] is True:
+            notify("Cierre L4D2 antes de aplicar el modpack.", "warn")
+            return
+        saved = [str(i) for i in (state["presets"].get(name) or [])]
+        found = [get_addon(i) for i in saved]
+        missing = [i for i, addon in zip(saved, found) if not addon]
+        installed = [addon for addon in found if addon]
+        vscripts = [addon for addon in installed if addon.get("is_vscript")]
+        compat = [addon for addon in installed if not addon.get("is_vscript")]
+        if not compat:
+            notify("El modpack no tiene addons instalados compatibles.", "warn")
+            return
+        target_ids = {addon["id"] for addon in compat}
+        active = set(state["active_ids"])
+        to_enable = [addon for addon in compat if addon["id"] not in active]
+        to_disable = sorted(active - target_ids)
+
+        def confirm_modpack():
+            if state.get("_modpack_busy"):
+                return
+            state["_modpack_busy"] = True
+            l4d2 = state["l4d2"]
+            close_dlg(dlg)
+            progress = show_progress(
+                "Aplicando modpack...",
+                "Dejando activos solo los addons de «%s»." % name)
+
+            async def _run_modpack():
+                error = None
+                actual = None
+                try:
+                    if await asyncio.to_thread(core.l4d2_running):
+                        raise RuntimeError("Cierre L4D2 antes de aplicar el modpack.")
+                    await save_last_config_async(
+                        "Antes de aplicar el modpack «%s»" % name, l4d2)
+                    ok = await asyncio.to_thread(
+                        core.apply_modpack, l4d2,
+                        [dict(addon) for addon in compat], debug_log)
+                    if not ok:
+                        raise RuntimeError("No se pudo aplicar el modpack completo.")
+                except Exception as ex:
+                    error = str(ex)
+                    dbg("modpack ERR %r" % ex)
+                finally:
+                    try:
+                        actual = set(await asyncio.to_thread(core.currently_enabled, l4d2))
+                    except Exception as ex:
+                        error = error or str(ex)
+                    state["_modpack_busy"] = False
+                    close_progress(progress)
+                if state["_closing"] or state["l4d2"] != l4d2:
+                    return
+                if actual is not None:
+                    state["active_ids"] = actual
+                complete = not error and actual is not None and target_ids <= actual
+                if complete:
+                    state["selected_ids"].difference_update(target_ids)
+                refresh_list()
+                if complete:
+                    msg = "Modpack «%s» aplicado: %s." % (
+                        name, _quant(len(target_ids), "addon activo", "addons activos"))
+                    if missing:
+                        msg += "  ·  %d no instalado(s)" % len(missing)
+                    if vscripts:
+                        msg += "  ·  %d VScript omitido(s)" % len(vscripts)
+                    notify(msg, "ok")
+                else:
+                    notify("No se pudo aplicar el modpack por completo. %s" % (error or ""),
+                           "warn" if actual is not None else "err")
+
+            try:
+                track_task(page.run_task(_run_modpack))
+            except Exception as ex:
+                state["_modpack_busy"] = False
+                close_progress(progress)
+                dbg("modpack task ERR %r" % ex)
+                notify("No se pudo iniciar el modpack.", "err")
+
+        items = [
+            "Se dejarán activos solo los %s del modpack." % _quant(
+                len(target_ids), "addon", "addons"),
+            "Se activarán %d y se quitarán %d que no son del modpack." % (
+                len(to_enable), len(to_disable)),
+            "No se añaden dependencias ni otros mods automáticamente.",
+        ]
+        if missing:
+            items.append("%d addon(s) del modpack ya no están instalados y se omitirán." %
+                         len(missing))
+        if vscripts:
+            items.append("%d VScript(s) se omitirán: no funcionan con este método." %
+                         len(vscripts))
+        cnt = confirm_dialog_content(
+            ft.Icons.SAVE_OUTLINED,
+            "Aplicar modpack «%s»" % name,
+            "Reemplaza los addons activos por los del modpack.",
+            items,
+            note=("No se borran VPKs de Workshop. Puedes volver atrás con "
+                  "«Última config»."),
+            width=500,
+            color=ACCENT,
+        )
+        dlg = ft.AlertDialog(
+            content=cnt,
+            actions=[
+                ft.TextButton("Cancelar",
+                              on_click=lambda ev: close_dialog_anim(cnt)),
+                ft.FilledButton(
+                    "Aplicar modpack",
+                    icon=ft.Icons.CHECK,
+                    on_click=lambda ev: confirm_modpack(),
+                    style=ft.ButtonStyle(
+                        bgcolor=ACCENT, color=BG,
+                        shape=ft.RoundedRectangleBorder(radius=8))),
+            ],
+            modal=True,
+        )
+        show_dlg(dlg)
+        animate_display(cnt)
 
     def remove_preset(name):
         presets = dict(state["presets"])
@@ -3227,7 +2901,7 @@ def main(page: ft.Page):
             [
                 "Se restaurará gameinfo.txt desde el respaldo seguro.",
                 "Se revertirá la visión de infectado modificada por el loader.",
-                "Se quitará el cfg de glows y su bloque gestionado en autoexec.cfg.",
+                "Se retirará cualquier cfg de glows que dejara una versión anterior del loader.",
                 "Se eliminarán únicamente copias de mods creadas por el loader.",
             ],
             note=("Los VPK de Workshop, mods externos y cambios ajenos al "

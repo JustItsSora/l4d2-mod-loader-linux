@@ -13,6 +13,8 @@ from l4d2_theme import (
     SURFACE_2,
     TEXT,
     TEXT_DIM,
+    PACK_BG,
+    PACK_TEXT,
     VSCRIPT_BG,
     VSCRIPT_TEXT,
 )
@@ -34,11 +36,16 @@ def fit_image(path, width, height):
 
 
 def make_type_badge(addon_type):
-    is_vscript = addon_type == "VSCRIPT"
+    if addon_type == "VSCRIPT":
+        bgcolor, color = AMBER, BG
+    elif addon_type == "PACK":
+        bgcolor, color = PACK_BG, PACK_TEXT
+    else:
+        bgcolor, color = VSCRIPT_BG, VSCRIPT_TEXT
     return ft.Container(
         content=ft.Text(addon_type, size=9, weight=ft.FontWeight.W_700,
-                        color=BG if is_vscript else VSCRIPT_TEXT),
-        bgcolor=AMBER if is_vscript else VSCRIPT_BG,
+                        color=color),
+        bgcolor=bgcolor,
         padding=ft.Padding.symmetric(horizontal=6, vertical=2),
         border_radius=4,
     )

@@ -3,6 +3,8 @@ import urllib.request
 from l4d2_platform import addon_separator
 from l4d2_locking import locked_installation, resource_lock
 from l4d2_migrations import migrate_legacy_addons
+from l4d2_modpacks import detect_members as detect_pack_members
+from l4d2_modpacks import is_pack as is_modpack
 
 from l4d2_game import (
     addon_snapshot,
@@ -12,7 +14,10 @@ from l4d2_game import (
     l4d2_running,
     list_addons,
     resolve_l4d2_path,
+    workshop_content_dirs,
+    workshop_detected,
 )
+from l4d2_addonlist import disable_workshop, restore_entries
 from l4d2_metadata import (
     CATEGORY_KEYWORDS,
     _REQUIRES_RE,
@@ -776,6 +781,79 @@ def disable(l4d2, ids, log=print):
         log('[!] No se pudieron retirar todas las copias: ' + ', '.join(failed))
         return False
     log("[OK] Addons deshabilitados de gameinfo.txt: " + ", ".join(removed))
+    return True
+
+
+@locked_installation
+def apply_modpack(l4d2, selected, log=print):
+    """Deja activos exactamente los addons de `selected` entre los del loader.
+
+    Primero activa los que faltan y despues retira los demas addons gestionados
+    por el loader; asi, si algo falla a mitad, nunca se pierde la seleccion.
+    Entradas de gameinfo.txt que no son del loader no se tocan. No se agregan
+    dependencias automaticas: un modpack son exactamente sus mods.
+    """
+    if l4d2_running():
+        log("[!] Left 4 Dead 2 esta abierto. Cierra el juego antes de aplicar el modpack.")
+        return False
+    target = {}
+    for addon in selected:
+        aid = addon.get('id')
+        if not _valid_addon_id(aid):
+            log('[!] ID invalido en el modpack: ' + str(aid))
+            return False
+        target[aid] = addon
+    if not target:
+        log("[!] El modpack no tiene addons para activar.")
+        return False
+    current = set(currently_enabled(l4d2))
+    current_cf = {aid.casefold() for aid in current}
+    managed = set(_managed_records(l4d2))
+    to_enable = [addon for aid, addon in target.items()
+                 if aid.casefold() not in current_cf]
+    target_cf = {aid.casefold() for aid in target}
+    to_disable = sorted(aid for aid in current & managed
+                        if aid.casefold() not in target_cf)
+    if to_enable and not enable(l4d2, to_enable, log):
+        log("[!] No se pudo activar el modpack; no se quito ningun addon.")
+        return False
+    if to_disable and not disable(l4d2, to_disable, log):
+        log("[!] El modpack se activo, pero no se pudieron quitar todos los demas addons.")
+        return False
+    log("[OK] Modpack aplicado: %d activos, %d quitados." % (len(target), len(to_disable)))
+    return True
+
+
+@locked_installation
+def apply_pack(l4d2, pack, members, log=print):
+    """Activa un modpack y deja fuera los mods que ya trae dentro.
+
+    members: ids de Workshop que el pack ya incluye. Se quitan del juego
+    (copias del loader y addonlist.txt) para no montar el mismo contenido dos
+    veces.
+    """
+    if l4d2_running():
+        log("[!] Left 4 Dead 2 esta abierto. Cierra el juego antes de aplicar el modpack.")
+        return False
+    if not isinstance(pack, dict) or not _valid_addon_id(pack.get('id')):
+        log("[!] Modpack invalido.")
+        return False
+    if not os.path.isfile(pack.get('path', '')):
+        log("[!] No se encontro el archivo del modpack: " + str(pack.get('id')))
+        return False
+    members = [str(m) for m in members if str(m).isdigit()]
+    records = _managed_records(l4d2)
+    managed_members = sorted(m for m in members if m in records)
+    if managed_members and not disable(l4d2, managed_members, log):
+        log("[!] No se pudieron quitar los mods que ya incluye el modpack.")
+        return False
+    if not enable(l4d2, [pack], log):
+        return False
+    if members:
+        changed = disable_workshop(l4d2, members, log)
+        if changed:
+            log("[*] Mods del Workshop desactivados en addonlist.txt: %d" % len(changed))
+    log("[OK] Modpack aplicado: %s" % (pack.get('title') or pack.get('id')))
     return True
 
 
