@@ -10,8 +10,10 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import l4d2_glows as glows
+import legacy_glows
 import l4d2_storage as storage
 import l4d2_vpk as vpk
 
@@ -31,9 +33,8 @@ class TemporaryFiles(unittest.TestCase):
         self.cfg.parent.mkdir(parents=True)
         self.messages = []
 
-    def apply(self, colors=None):
-        return glows.apply_glows(self.game, colors or glows.default_colors(),
-                                 log=self.messages.append)
+    def apply(self):
+        return legacy_glows.apply(self.game, log=self.messages.append)
 
     def restore(self):
         return glows.restore_glows(self.game, log=self.messages.append)
@@ -64,8 +65,6 @@ class StorageHardeningTests(TemporaryFiles):
     def test_denied_config_directory_allows_defaults_but_not_save(self):
         with mock.patch.object(storage.os, "makedirs", side_effect=PermissionError("denied")):
             self.assertEqual(storage.app_dir(), str(self.root / "settings" / "L4D2ModLoader"))
-            self.assertEqual(glows.load_colors(), glows.default_colors())
-            self.assertFalse(glows.save_colors(glows.default_colors()))
 
 
 class GlowHardeningTests(TemporaryFiles):
@@ -80,7 +79,7 @@ class GlowHardeningTests(TemporaryFiles):
         self.assertTrue(self.restore())
         self.assertEqual(self.autoexec.read_bytes(), before)
 
-    def test_apply_restore_preserve_external_bytes_encodings_and_newlines(self):
+    def test_legacy_restore_preserves_external_bytes_encodings_and_newlines(self):
         samples = [
             b' \t// caf\xe9 \xff\x81\r\nbind x "say hola"\r\n\r\n',
             b'\n\n// UTF-8 caf\xc3\xa9\n\tbind x "a"  ',
@@ -116,7 +115,7 @@ class GlowHardeningTests(TemporaryFiles):
         self.assertTrue(self.restore())
         self.assertEqual(self.autoexec.read_bytes(), before)
 
-    def test_read_failure_aborts_apply_and_restore_before_any_game_change(self):
+    def test_read_failure_aborts_before_any_game_change(self):
         self.autoexec.write_bytes(b'// original\r\n')
         self.cfg.write_bytes(b'// old cfg\r\n')
         real_open = builtins.open
@@ -134,43 +133,16 @@ class GlowHardeningTests(TemporaryFiles):
                 self.assertEqual(self.autoexec.read_bytes(), b'// original\r\n')
                 self.assertEqual(self.cfg.read_bytes(), b'// old cfg\r\n')
 
-    def test_invalid_color_is_reported_without_escaping(self):
-        colors = glows.default_colors()
-        colors["ability"] = "bad color"
-        self.assertFalse(self.apply(colors))
-        self.assertFalse(self.cfg.exists())
-
-    def test_state_save_failure_rolls_back_apply_and_restore(self):
-        self.autoexec.write_bytes(b'// original\r\n')
-        self.cfg.write_bytes(b'// old cfg\r\n')
-        with mock.patch.object(glows, "save_colors", return_value=False):
-            result = self.apply()
-        self.assertFalse(result)
-        self.assertEqual(self.autoexec.read_bytes(), b'// original\r\n')
-        self.assertEqual(self.cfg.read_bytes(), b'// old cfg\r\n')
-        self.assertTrue(self.apply())
-        applied = self.autoexec.read_bytes(), self.cfg.read_bytes()
-        with mock.patch.object(glows, "save_colors", return_value=False):
-            result = self.restore()
-        self.assertFalse(result)
-        self.assertEqual((self.autoexec.read_bytes(), self.cfg.read_bytes()), applied)
-
     def test_restore_state_save_failure_is_reported_and_recoverable(self):
         self.autoexec.write_bytes(b'// original\r\n')
         self.assertTrue(self.apply())
         before = self.autoexec.read_bytes(), self.cfg.read_bytes()
-        with mock.patch.object(glows, "save_colors", return_value=False):
+        with mock.patch.object(glows, "_forget_state", return_value=False):
             result = self.restore()
         self.assertFalse(result)
         self.assertEqual((self.autoexec.read_bytes(), self.cfg.read_bytes()), before)
         self.assertTrue(self.restore())
         self.assertEqual(self.autoexec.read_bytes(), b'// original\r\n')
-
-    def test_failed_apply_leaves_no_new_game_files(self):
-        with mock.patch.object(glows, "save_colors", return_value=False):
-            self.assertFalse(self.apply())
-        self.assertFalse(self.autoexec.exists())
-        self.assertFalse(self.cfg.exists())
 
     def test_failed_rollback_keeps_exact_recovery_copy_and_reports_path(self):
         self.autoexec.write_bytes(b'// original\r\n')
@@ -259,7 +231,7 @@ class GlowHardeningTests(TemporaryFiles):
         second_reading = threading.Event()
         results = []
         errors = []
-        real_save = glows.save_colors
+        real_save = legacy_glows.save_state
         real_read = glows._read_optional_bytes
 
         def save(*args, **kwargs):
@@ -282,7 +254,7 @@ class GlowHardeningTests(TemporaryFiles):
             except Exception as ex:
                 errors.append(ex)
 
-        with mock.patch.object(glows, 'save_colors', side_effect=save), \
+        with mock.patch.object(legacy_glows, 'save_state', side_effect=save), \
                 mock.patch.object(glows, '_read_optional_bytes', side_effect=read):
             first = threading.Thread(target=run, args=(self.apply,), name='apply-test')
             second = threading.Thread(target=run, args=(self.restore, second_started),
