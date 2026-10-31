@@ -133,7 +133,7 @@ Si otra herramienta o el usuario modificó `gameinfo.txt` después, el loader co
 ## Créditos
 
 Proyecto original: **Tokyossz** (<https://github.com/SOYmenchowey/l4d2-loader-mod-versus>).
-Port para Linux y adaptaciones: **kyuog**.
+Port para Linux y adaptaciones: **JustItsSora**.
 
 El repositorio original se publico sin declaracion de licencia, por lo que el
 codigo heredado mantiene los derechos de autor de su autor. Las contribuciones

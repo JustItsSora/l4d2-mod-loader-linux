@@ -15,7 +15,7 @@ app) mantiene esa situation.
 
 ## Port para Linux
 
-Las siguientes contribuciones son obra de **kyuog** y se publican bajo la
+Las siguientes contribuciones son obra de **JustItsSora** y se publican bajo la
 licencia MIT incluida en `LICENSE`:
 
 * `l4d2_platform.py`: comprobaciones de plataforma, rutas de datos por SO y
@@ -38,4 +38,4 @@ licencia MIT incluida en `LICENSE`:
 Si el autor original anade una licencia a su repositorio (por ejemplo MIT),
 esta se aplicara automaticamente a las partes aqui distribuidas. Hasta
 entonces, se recomienda citar siempre a **Tokyossz** como autor del proyecto
-original y a **kyuog** como autor del port para Linux.
+original y a **JustItsSora** como autor del port para Linux.
