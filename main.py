@@ -1,6 +1,7 @@
 import asyncio
 import glob
 import os
+import tempfile
 import time
 
 import flet as ft
@@ -12,8 +13,10 @@ import l4d2_glows
 import l4d2_sidebar
 import l4d2_state
 import l4d2_ui as ui
+import l4d2_updater
 from l4d2_platform import data_base, open_target
 from l4d2_app_config import (
+    APP_VERSION,
     DEFAULT_WINDOW_WIDTH,
     cfg_path as _cfg_path,
     dbg,
@@ -1277,6 +1280,221 @@ def main(page: ft.Page):
         show_dlg(dlg)
         animate_display(cnt)
 
+    def update_dialog_content(release, asset, status_text, progress_bar,
+                              width=470):
+        version = str((release or {}).get("tag_name") or "").lstrip("v")
+        notes = l4d2_updater.release_notes(release)
+        size = l4d2_updater.format_size((asset or {}).get("size"))
+        return dialog_shell(
+            ft.Column(
+                [
+                    modal_header(
+                        getattr(ft.Icons, "SYSTEM_UPDATE_ALT",
+                                ft.Icons.UPDATE),
+                        "Actualizacion disponible",
+                        "Version %s (tienes %s)" % (version, APP_VERSION),
+                        ACCENT),
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Text("Notas de la release",
+                                                size=12, color=TEXT_DIM,
+                                                weight=ft.FontWeight.W_600),
+                                        ft.Container(expand=True),
+                                        ft.Text(size, size=11, color=TEXT_DIM),
+                                    ],
+                                    spacing=8),
+                                ft.Text(notes, size=12, color=TEXT_DIM,
+                                        max_lines=8,
+                                        overflow=ft.TextOverflow.ELLIPSIS),
+                            ],
+                            spacing=8,
+                        ),
+                        bgcolor=SURFACE,
+                        border=ft.Border.all(1, BORDER),
+                        border_radius=8,
+                        padding=12,
+                    ),
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                progress_bar,
+                                status_text,
+                            ],
+                            spacing=8,
+                        ),
+                        bgcolor=SURFACE,
+                        border=ft.Border.all(1, BORDER),
+                        border_radius=8,
+                        padding=12,
+                    ),
+                ],
+                spacing=12,
+                tight=True,
+            ),
+            width,
+        )
+
+    async def check_update(e=None, silent=False):
+        if state.get("_update_busy"):
+            return
+        state["_update_busy"] = True
+        try:
+            release = await asyncio.to_thread(l4d2_updater.fetch_latest_release)
+        except Exception as ex:
+            dbg("update check ERR %r" % ex)
+            release = None
+        finally:
+            state["_update_busy"] = False
+        if not release or not release.get("tag_name"):
+            if not silent:
+                notify("No se pudo consultar GitHub.", "err")
+            return
+        version = str(release["tag_name"]).lstrip("v")
+        if not l4d2_updater.is_newer(APP_VERSION, version):
+            state["update_info"] = None
+            sidebar_holder.content = build_sidebar()
+            safe_update()
+            if not silent:
+                notify("Ya tienes la ultima version (%s)." % APP_VERSION,
+                       "ok")
+            return
+        state["update_info"] = {"version": version, "release": release}
+        sidebar_holder.content = build_sidebar()
+        safe_update()
+        if not silent:
+            open_update_dialog(release)
+        else:
+            notify("Hay una nueva version: %s" % version, "warn")
+
+    def open_update_dialog(release):
+        asset = l4d2_updater.find_asset(release)
+        if not asset:
+            notify("La release no tiene un archivo para Linux.", "warn")
+            launch_external(release.get("html_url") or
+                            "https://github.com/%s/releases" %
+                            l4d2_updater.REPO_SLUG)
+            return
+        progress_bar = ft.ProgressBar(width=422, color=ACCENT,
+                                       bgcolor=BORDER, value=0)
+        status_text = ft.Text("Listo para descargar.", size=12,
+                              color=TEXT_DIM)
+        content = update_dialog_content(release, asset, status_text,
+                                        progress_bar)
+        dlg = ft.AlertDialog(
+            content=content,
+            modal=True,
+            actions=[],
+            bgcolor=SURFACE_2,
+            content_padding=0,
+            actions_padding=0,
+            shape=ft.RoundedRectangleBorder(radius=18),
+        )
+
+        async def download_and_apply(ev=None):
+            if l4d2_updater.is_frozen():
+                notify("Esta build no se actualiza en sitio: descarga la "
+                       "nueva version desde GitHub.", "warn")
+                launch_external(release.get("html_url") or
+                                "https://github.com/%s/releases" %
+                                l4d2_updater.REPO_SLUG)
+                return
+            state["_update_busy"] = True
+            destination = os.path.join(tempfile.gettempdir(),
+                                       "l4d2-loader-update.zip")
+            progress = {"done": 0, "total": int(asset.get("size") or 0)}
+
+            def on_progress(done, total):
+                progress["done"] = done
+                progress["total"] = total or progress["total"]
+
+            task = asyncio.ensure_future(asyncio.to_thread(
+                l4d2_updater.download_asset, asset, destination, on_progress))
+            while not task.done():
+                done = progress["done"]
+                total = progress["total"]
+                try:
+                    progress_bar.value = (done / total) if total else None
+                    status_text.value = "Descargando... %s de %s" % (
+                        l4d2_updater.format_size(done),
+                        l4d2_updater.format_size(total))
+                    progress_bar.update()
+                    status_text.update()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.2)
+            try:
+                await task
+            except l4d2_updater.UpdateError as ex:
+                state["_update_busy"] = False
+                status_text.value = str(ex)
+                status_text.color = DANGER
+                notify(str(ex), "err")
+                safe_update()
+                return
+            except Exception as ex:
+                state["_update_busy"] = False
+                dbg("update download ERR %r" % ex)
+                notify("No se pudo descargar la actualizacion.", "err")
+                return
+            try:
+                result = await asyncio.to_thread(
+                    l4d2_updater.apply_update, destination,
+                    l4d2_updater.app_root())
+            except l4d2_updater.UpdateError as ex:
+                state["_update_busy"] = False
+                notify(str(ex), "err")
+                return
+            state["_update_busy"] = False
+            progress_bar.value = 1
+            status_text.value = "Actualizacion aplicada (%d archivos). " % (
+                result.get("files", 0))
+            status_text.color = ACCENT
+            state["update_info"] = None
+            sidebar_holder.content = build_sidebar()
+            safe_update()
+            notify("Actualizacion aplicada. Reinicia el loader.", "ok")
+
+        download_button = ft.FilledButton(
+            "Actualizar ahora",
+            icon=getattr(ft.Icons, "DOWNLOAD", ft.Icons.SAVE_ALT),
+            on_click=download_and_apply,
+            style=ft.ButtonStyle(bgcolor=ACCENT, color=BG,
+                                 shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+        restart_button = ft.FilledButton(
+            "Reiniciar",
+            icon=getattr(ft.Icons, "RESTART_ALT", ft.Icons.REFRESH),
+            on_click=lambda ev: restart_app(),
+            style=ft.ButtonStyle(bgcolor=AMBER, color=BG,
+                                 shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+        actions = ft.Row(
+            [
+                ft.TextButton("Ver en GitHub",
+                              on_click=lambda ev: launch_external(
+                                  release.get("html_url") or
+                                  "https://github.com/%s/releases" %
+                                  l4d2_updater.REPO_SLUG)),
+                ft.Container(expand=True),
+                ft.TextButton("Cerrar", on_click=lambda ev: close_dlg(dlg)),
+                download_button,
+            ],
+            spacing=8,
+        )
+        content.content.controls.append(actions)
+        show_dlg(dlg)
+        animate_display(content)
+
+    def restart_app():
+        if not l4d2_updater.restart(l4d2_updater.app_root()):
+            notify("No se pudo reiniciar el loader.", "err")
+            return
+        notify("Reiniciando...", "ok")
+        ui_later(0.6, lambda: (shutdown(), page.window.close()))
+
     async def toggle_vision(e):
         if not state["l4d2"]:
             notify("No se encontró L4D2.", "warn")
@@ -1334,6 +1552,7 @@ def main(page: ft.Page):
             on_toggle_vision=toggle_vision,
             on_tiktok=open_tiktok,
             tiktok_url=TIKTOK_URL,
+            on_check_update=check_update,
         )
 
     sidebar_holder = ft.Container(content=build_sidebar(), padding=18,
@@ -3186,6 +3405,10 @@ def main(page: ft.Page):
         state["_watch_task"] = track_task(page.run_task(watch_workshop))
     except Exception as ex:
         dbg("watch task ERR %r" % ex)
+    try:
+        track_task(page.run_task(check_update, silent=True))
+    except Exception as ex:
+        dbg("update check task ERR %r" % ex)
 
 
 if __name__ == "__main__":

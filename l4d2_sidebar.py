@@ -159,17 +159,26 @@ def _section(text):
     )
 
 
-def _action(text, color, icon, on_click, subtle=False):
+def _action(text, color, icon, on_click, subtle=False, badge=None):
+    row = ft.Row(
+        [
+            ft.Icon(icon, size=17, color=color),
+            ft.Text(text, size=12, color=color, max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS, expand=True),
+        ],
+        spacing=8,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+    if badge:
+        row.controls.append(ft.Container(
+            content=ft.Text(badge, size=10, color=BG,
+                            weight=ft.FontWeight.W_700),
+            bgcolor=AMBER,
+            padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+            border_radius=8,
+        ))
     return ft.Container(
-        content=ft.Row(
-            [
-                ft.Icon(icon, size=17, color=color),
-                ft.Text(text, size=12, color=color, max_lines=2,
-                        overflow=ft.TextOverflow.ELLIPSIS, expand=True),
-            ],
-            spacing=8,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
+        content=row,
         padding=ft.Padding.symmetric(horizontal=14, vertical=10),
         border_radius=8,
         bgcolor=SURFACE_2 if not subtle else None,
@@ -181,7 +190,10 @@ def _action(text, color, icon, on_click, subtle=False):
 
 def build_sidebar(state, health_snapshot, icon_path, on_play, on_nav,
                   on_diagnostic, on_restore_last, on_restore_original,
-                  on_toggle_vision, on_tiktok, tiktok_url):
+                  on_toggle_vision, on_tiktok, tiktok_url,
+                  on_check_update=None):
+    update_info = state.get("update_info") or {}
+    update_version = update_info.get("version")
     logo = ft.Container(
         content=ft.Column(
             [
@@ -247,6 +259,15 @@ def build_sidebar(state, health_snapshot, icon_path, on_play, on_nav,
                 on_diagnostic, subtle=True),
             _action("Última config", TEXT, ft.Icons.RESTORE,
                     on_restore_last, subtle=True),
+            _action(
+                "Actualizar" if not update_version
+                else "Actualización %s" % update_version,
+                ACCENT if update_version else TEXT,
+                getattr(ft.Icons, "SYSTEM_UPDATE_ALT", ft.Icons.UPDATE),
+                on_check_update,
+                subtle=True,
+                badge="!" if update_version else None,
+            ),
             ft.Container(height=6),
             ft.Divider(color=BORDER, height=1),
             _section("SISTEMA"),

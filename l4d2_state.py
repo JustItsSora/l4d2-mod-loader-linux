@@ -38,6 +38,7 @@ def create_initial_state(cfg_path):
         "favs": set(core.load_json(cfg_path("favs.json"), []) or []),
         "presets": core.load_json(cfg_path("presets.json"), {}) or {},
         "last_config": core.load_json(cfg_path("last_config.json"), {}) or {},
+        "update_info": None,
         "manual_l4d2_path": _saved_game_path(cfg_path),
         "sort_recent": False,
         "_fresh_scan": False,

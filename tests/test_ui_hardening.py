@@ -31,9 +31,9 @@ class FakePage:
         self.dialogs = []
         self.controls = []
 
-    def run_task(self, fn, *args):
+    def run_task(self, fn, *args, **kwargs):
         future = concurrent.futures.Future()
-        self.tasks.append((fn, args, future))
+        self.tasks.append((fn, args, future, kwargs))
         return future
 
     def show_dialog(self, dialog):
@@ -53,11 +53,11 @@ class FakePage:
         pass
 
     async def run_named(self, name):
-        index = next(i for i, (fn, _, _) in enumerate(self.tasks)
+        index = next(i for i, (fn, _, _, _) in enumerate(self.tasks)
                      if fn.__name__ == name)
-        fn, args, future = self.tasks.pop(index)
+        fn, args, future, kwargs = self.tasks.pop(index)
         try:
-            result = await fn(*args)
+            result = await fn(*args, **kwargs)
         finally:
             if not future.done():
                 future.set_result(None)
@@ -66,13 +66,13 @@ class FakePage:
     async def animations(self):
         with mock.patch.object(app.asyncio, "sleep", new=mock.AsyncMock()):
             while True:
-                index = next((i for i, (fn, _, _) in enumerate(self.tasks)
+                index = next((i for i, (fn, _, _, _) in enumerate(self.tasks)
                               if fn.__name__ == "_t" and
                               inspect.getclosurevars(fn).nonlocals["delay"] < 0.25), None)
                 if index is None:
                     break
-                fn, args, future = self.tasks.pop(index)
-                await fn(*args)
+                fn, args, future, kwargs = self.tasks.pop(index)
+                await fn(*args, **kwargs)
                 if not future.done():
                     future.set_result(None)
 
@@ -281,7 +281,8 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(app.core, "vision_state", return_value="on"), \
                 mock.patch.object(app.core, "disable_infected_vision", side_effect=TimeoutError("locked")):
             await self.ui["toggle_vision"](None)
-            vision_jobs = [fn for fn, _, _ in self.page.tasks if fn.__name__ == "_run_vision"]
+            vision_jobs = [fn for fn, _, _, _ in self.page.tasks
+                           if fn.__name__ == "_run_vision"]
             if vision_jobs:
                 await self.page.run_named("_run_vision")
         self.assertTrue(any("locked" in m for m in self.messages()))
@@ -441,7 +442,7 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(app, "pane_set_img") as paint:
             for pane in panes:
                 self.ui["load_preview"](addon, pane)
-            preview_jobs = [(fn, args) for fn, args, _ in self.page.tasks
+            preview_jobs = [(fn, args) for fn, args, _, _ in self.page.tasks
                             if fn.__name__ == "_load" and fn.__qualname__.endswith("load_preview.<locals>._load")]
             jobs = [asyncio.create_task(fn(*args)) for fn, args in preview_jobs]
             try:
@@ -624,7 +625,7 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
             for i in range(8):
                 addon = self.addon(str(i), _preview_url="https://example.invalid/%d" % i)
                 self.ui["load_preview"](addon, {"current_id": str(i), "generation": 0})
-            jobs = [asyncio.create_task(fn(*args)) for fn, args, _ in self.page.tasks
+            jobs = [asyncio.create_task(fn(*args)) for fn, args, _, _ in self.page.tasks
                     if fn.__qualname__.endswith("load_preview.<locals>._load")]
             try:
                 for _ in range(50):
@@ -655,6 +656,48 @@ class UIHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(polls[0], 10)
         self.assertEqual(self.state["_load_generation"], 2)
         app.core.currently_enabled_orphans.assert_not_called()
+
+
+    RELEASE = {
+        "tag_name": "v99.0",
+        "body": "notas de la release",
+        "html_url": "https://github.com/JustItsSora/l4d2-mod-loader-linux",
+        "assets": [{
+            "name": "l4d2-loader-linux-99.0.zip",
+            "size": 1024,
+            "browser_download_url": "https://example.invalid/x.zip",
+        }],
+    }
+
+    async def test_startup_check_marks_the_new_version(self):
+        with mock.patch.object(app.l4d2_updater, "fetch_latest_release",
+                               return_value=self.RELEASE):
+            await self.page.run_named("check_update")
+        self.assertEqual(self.state["update_info"]["version"], "99.0")
+        sidebar = self.ui["sidebar_holder"].content
+        texts = [control.value for control in descendants(sidebar)
+                 if isinstance(control, ft.Text)]
+        self.assertTrue(any("99.0" in (value or "") for value in texts))
+
+    async def test_manual_check_opens_the_update_dialog(self):
+        with mock.patch.object(app.l4d2_updater, "fetch_latest_release",
+                               return_value=self.RELEASE):
+            await self.ui["check_update"](None)
+        self.assertTrue(self.page.dialogs)
+        dialog = self.page.dialogs[-1]
+        texts = [control.value for control in descendants(dialog.content)
+                 if isinstance(control, ft.Text)]
+        self.assertTrue(any("99.0" in (value or "") for value in texts))
+
+    async def test_check_without_new_release_keeps_the_version(self):
+        with mock.patch.object(app.l4d2_updater, "fetch_latest_release",
+                               return_value={"tag_name": "v" + APP_VERSION,
+                                             "assets": []}):
+            await self.ui["check_update"](None)
+        self.assertIsNone(self.state["update_info"])
+        messages = self.messages()
+        self.assertTrue(any("ultima version" in message for message in messages))
+
 
 
 class ClipboardAndRequirementsTests(unittest.TestCase):
