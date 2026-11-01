@@ -10,7 +10,7 @@
 > `steamapps/workshop/content/550`.
 > Ver `NOTICE.md` para el detalle de autoria y licencia.
 
-**Version actual: 1.3.** La version aparece en la interfaz y en el reporte de diagnostico copiado para identificar cada entrega.
+**Version actual: 1.4.** La version aparece en la interfaz y en el reporte de diagnostico copiado para identificar cada entrega.
 
 Herramienta para gestionar addons de **Left 4 Dead 2** sin mover archivos a mano ni editar `gameinfo.txt` manualmente.
 
@@ -43,6 +43,27 @@ Selecciona tus mods para Versus, activa la configuración y pulsa **JUGAR**.
 * **Detección de Workshop**: lee `left4dead2/addons/workshop` y también `steamapps/workshop/content/550`; el watcher detecta cambios sin reiniciar la app.
 * **Bloqueo con juego abierto**: evita modificar archivos mientras Left 4 Dead 2 está ejecutándose.
 * **Auto-actualizador**: al arrancar consulta las releases de GitHub y avisa en la barra lateral cuando hay una version nueva. El boton «Actualizar» descarga el zip de la release, guarda una copia de los archivos actuales en `.backup-previous`, los reemplaza y pide reiniciar. No toca el entorno virtual (`.venv`), la configuracion del usuario ni el juego.
+
+## Compilar para Linux (opcional)
+
+Cada release trae el ejecutable ya compilado. Para compilarlo tu mismo:
+
+```bash
+./build-linux.sh
+```
+
+El script crea el entorno virtual, instala `flet[desktop]` y `pyinstaller`, pasa los tests y genera `dist/L4D2 Mod Loader` (un unico archivo). Tambien se puede a mano:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m PyInstaller --noconfirm --clean L4D2_Mod_Loader.spec
+```
+
+Notas del build: el cliente de Flet se incrusta en el binario, asi que no hace
+falta descargarlo al usar la app. En Linux el cliente vive en
+`flet/lib/libapp.so` (no en `data/app.so` como en Windows) y el ejecutable
+`flet` debe conservar el permiso de ejecucion dentro del bundle.
 
 ## Requisitos
 
