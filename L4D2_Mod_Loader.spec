@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
 import sys
 from importlib.metadata import version
 from pathlib import Path
@@ -12,13 +13,26 @@ if version('flet') != version('flet-desktop'):
 
 # Resolve the official client at build time, never on the user's first launch.
 desktop_dir = ensure_client_cached() / 'flet'
-required_files = (('flet.exe', 'flutter_windows.dll', 'data/app.so', 'data/icudtl.dat')
-                  if sys.platform == 'win32' else ('flet', 'data/app.so', 'data/icudtl.dat'))
+if sys.platform == 'win32':
+    required_files = ('flet.exe', 'flutter_windows.dll', 'data/app.so',
+                      'data/icudtl.dat')
+else:
+    required_files = ('flet', 'lib/libapp.so', 'lib/libflutter_linux_gtk.so',
+                      'data/icudtl.dat')
 for required in required_files:
     if not (desktop_dir / required).is_file():
         raise RuntimeError('Incomplete Flet desktop runtime: ' + str(desktop_dir / required))
 
-flet_data = [(str(desktop_dir), 'flet_desktop/app/flet')]
+client_root = 'flet_desktop/app/flet'
+flet_data = []
+for root, dirs, files in os.walk(str(desktop_dir)):
+    for name in files:
+        if not sys.platform == 'win32' and name == 'flet':
+            continue
+        source = os.path.join(root, name)
+        target = os.path.join(client_root, os.path.relpath(root,
+                                                            str(desktop_dir)))
+        flet_data.append((source, target))
 flet_data += collect_data_files('flet.controls.material', includes=['icons.json'])
 flet_data += collect_data_files('flet.controls.cupertino', includes=['cupertino_icons.json'])
 
@@ -40,6 +54,10 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+if not sys.platform == 'win32':
+    # The client launcher must keep the executable bit inside the bundle.
+    a.binaries.append((os.path.join(client_root, 'flet'),
+                       str(desktop_dir / 'flet'), 'BINARY'))
 pyz = PYZ(a.pure)
 
 exe = EXE(
